@@ -1,0 +1,3 @@
+[submodule "stm32f4xx-hal"]
+	path = stm32f4xx-hal
+	url = git@github.com:jamesmunns/stm32f4xx-hal.git
