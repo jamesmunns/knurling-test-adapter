@@ -18,9 +18,11 @@ use smart_leds::{RGB8, SmartLedsWrite, colors, gamma, brightness};
 use usb_device::{prelude::*, bus::UsbBusAllocator};
 use usbd_serial::SerialPort;
 use core::sync::atomic::{AtomicU32, Ordering};
-use bbqueue::{ConstBBBuffer, BBBuffer, consts::*, framed::{FrameConsumer, FrameProducer, FrameGrantW}};
+use bbqueue::{ConstBBBuffer, BBBuffer, consts::*, framed::{FrameConsumer, FrameProducer, FrameGrantW, FrameGrantR}};
 
 static RS485_RX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_TX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
+
 static COLOR_CMD: AtomicU32 = AtomicU32::new(0);
 type SmartLed = Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<AF6>>)>>;
 
@@ -30,10 +32,21 @@ const APP: () = {
         smartled: SmartLed,
         rs485_tx: Tx<USART1>,
         rs485_rx: Rx<USART1>,
-        rs485_prod: FrameProducer<'static, U4096>,
-        rs485_cons: FrameConsumer<'static, U4096>,
+        rs485_rx_prod: FrameProducer<'static, U4096>,
+        rs485_rx_cons: FrameConsumer<'static, U4096>,
+        rs485_tx_prod: FrameProducer<'static, U4096>,
+        rs485_tx_cons: FrameConsumer<'static, U4096>,
         usb_serial: SerialPort<'static, UsbBus<USB>>,
         usb_dev: UsbDevice<'static, UsbBus<USB>>,
+        tx_xfr: Option<
+            dma::Transfer<
+                dma::Stream7<stm32::DMA2>,
+                dma::Channel4,
+                USART1,
+                dma::MemoryToPeripheral,
+                FrameGrantR<'static, U4096>
+            >
+        >,
         rx_xfr: Option<
             dma::Transfer<
                 dma::Stream5<stm32::DMA2>,
@@ -109,8 +122,9 @@ const APP: () = {
             .device_class(usbd_serial::USB_CLASS_CDC)
             .build();
 
-        let (mut prod, cons) = RS485_RX.try_split_framed().unwrap();
-        let wgr = prod.grant(128).unwrap();
+        let (mut prod_rx, cons_rx) = RS485_RX.try_split_framed().unwrap();
+        let (prod_tx, cons_tx) = RS485_TX.try_split_framed().unwrap();
+        let wgr = prod_rx.grant(128).unwrap();
 
         let dma_cfg = dma::config::DmaConfig::default()
             .transfer_complete_interrupt(true)
@@ -118,7 +132,7 @@ const APP: () = {
 
         let streams = dma::StreamsTuple::new(board.DMA2);
 
-        let mut txfr = dma::Transfer::init(
+        let mut rx_txfr = dma::Transfer::init(
             streams.5,
             unsafe { stm32::Peripherals::steal().USART1 },
             wgr,
@@ -126,7 +140,7 @@ const APP: () = {
             dma_cfg
         );
 
-        txfr.start(|usart| {
+        rx_txfr.start(|usart| {
             usart.cr1.modify(|_r, w| {
                 w.re().set_bit()
             })
@@ -138,16 +152,19 @@ const APP: () = {
             rs485_rx: rx,
             usb_serial: serial,
             usb_dev,
-            rs485_prod: prod,
-            rs485_cons: cons,
-            rx_xfr: Some(txfr),
+            rs485_rx_prod: prod_rx,
+            rs485_rx_cons: cons_rx,
+            rs485_tx_prod: prod_tx,
+            rs485_tx_cons: cons_tx,
+            rx_xfr: Some(rx_txfr),
+            tx_xfr: None,
         }
     }
 
-    #[task(binds = DMA2_STREAM5, resources = [rs485_prod, rx_xfr])]
+    #[task(binds = DMA2_STREAM5, resources = [rs485_rx_prod, rx_xfr])]
     fn rs485_rx(ctx: rs485_rx::Context) {
         defmt::info!("ding!");
-        let prod = ctx.resources.rs485_prod;
+        let prod = ctx.resources.rs485_rx_prod;
         let mut xfr = ctx.resources.rx_xfr.take().unwrap();
 
         xfr.clear_interrupts();
@@ -210,11 +227,23 @@ const APP: () = {
         }
     }
 
-    #[idle(resources = [smartled, rs485_tx, rs485_cons])]
+    #[task(resources = [tx_xfr, rs485_tx_cons])]
+    fn tx_trigger(ctx: tx_trigger::Context) {
+        let xfr = ctx.resources.tx_xfr;
+        let cons = ctx.resources.rs485_tx_cons;
+
+        if xfr.is_none() {
+            if let Some(rgr) = cons.read() {
+
+            }
+        }
+    }
+
+    #[idle(resources = [smartled, rs485_tx, rs485_rx_cons])]
     fn idle(ctx: idle::Context) -> ! {
         let led = ctx.resources.smartled;
         let tx = ctx.resources.rs485_tx;
-        let rx = ctx.resources.rs485_cons;
+        let rx = ctx.resources.rs485_rx_cons;
 
         let mut color = colors::WHITE;
 
@@ -264,6 +293,10 @@ const APP: () = {
             //     color = col;
             // }
         }
+    }
+
+    extern "C" {
+        fn WWDG();
     }
 };
 
