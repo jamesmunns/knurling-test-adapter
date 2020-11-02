@@ -1,3 +1,6 @@
 [submodule "stm32f4xx-hal"]
 	path = stm32f4xx-hal
 	url = https://github.com/jamesmunns/stm32f4xx-hal
+[submodule "bbqueue"]
+	path = bbqueue
+	url = https://github.com/jamesmunns/bbqueue
