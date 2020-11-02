@@ -7,6 +7,14 @@ version = "0.1.0"
 [workspace]
 members = ["testsuite"]
 
+[dependencies]
+cortex-m = "0.6.4"
+cortex-m-rt = "0.6.13"
+ws2812-spi = "0.3"
+smart-leds = "0.3.0"
+embedded-hal = "0.2.4"
+nb = "1.0.0"
+
 [dependencies.defmt]
 git = "https://github.com/knurling-rs/defmt"
 # branch = "main"
@@ -21,10 +29,6 @@ rev = "28c1afb4d3bad747ef47737a83f5c8b13928cb8a"
 git = "https://github.com/knurling-rs/probe-run"
 # branch = "main"
 rev = "056d958a"
-
-[dependencies]
-cortex-m = "0.6.4"
-cortex-m-rt = "0.6.13"
 
 [dependencies.stm32f4xx-hal]
 path = "../../stm32f4xx-hal"
@@ -53,6 +57,14 @@ incremental = false
 opt-level = 3 # <-
 overflow-checks = true # <-
 
+# do not optimize proc-macro crates = faster builds from scratch
+[profile.dev.build-override]
+codegen-units = 8
+debug = false
+debug-assertions = false
+opt-level = 0
+overflow-checks = false
+
 [profile.release]
 codegen-units = 1
 debug = 2
@@ -61,14 +73,6 @@ incremental = false
 lto = 'fat'
 opt-level = 3 # <-
 overflow-checks = false # <-
-
-# do not optimize proc-macro crates = faster builds from scratch
-[profile.dev.build-override]
-codegen-units = 8
-debug = false
-debug-assertions = false
-opt-level = 0
-overflow-checks = false
 
 [profile.release.build-override]
 codegen-units = 8
