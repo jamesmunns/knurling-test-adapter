@@ -12,6 +12,7 @@ use rand_chacha::{
 };
 pub use stm32f4xx_hal::adc::config::SampleTime;
 
+/// The sources of entropy to use
 #[derive(Debug, Copy, Clone)]
 pub enum EntropySources {
     TempOnly(SampleTime),
@@ -22,10 +23,26 @@ pub enum EntropySources {
     AllSources(SampleTime),
 }
 
+/// Configuration values for seeding the PRNG
 #[derive(Debug, Copy, Clone)]
 pub struct RngConfig {
+    /// Minimum number of randomly generated words to discard
+    ///
+    /// Note: If this is less than 1024, 1024 numbers will be discarded
     pub min_init_cycles: u32,
+
+    /// Maximum number of randomly generated words to discard
+    ///
+    /// Note: This must be greater than `min_init_cycles`, or the
+    /// values will be swapped
     pub max_init_cycles: u32,
+
+    /// The sources to use for runtime entropy gathering for the initial
+    /// seed value. Options include:
+    ///
+    /// * Device Info, such as serial number and die position
+    /// * Internal Temperature Sensor
+    /// * Internal VRef measurement
     pub entropy_sources: EntropySources,
 }
 
@@ -39,6 +56,7 @@ impl Default for RngConfig {
     }
 }
 
+// Fill the device info into 16 bytes
 fn fill_device_info(slice: &mut [u8; 16]) {
     let uid = Uid::get();
     let vtc30 = VtempCal30::get();
@@ -86,6 +104,7 @@ fn fill_adc_readings(adc: &mut Adc<ADC1>, source: Source, samples: SampleTime, b
     }
 }
 
+/// Create a new RNG, seeded with ADC data
 pub fn seed_rng(adc: &mut Adc<ADC1>, config: RngConfig) -> ChaCha8Rng {
     adc.enable_temperature_and_vref();
     adc.set_resolution(Resolution::Twelve);

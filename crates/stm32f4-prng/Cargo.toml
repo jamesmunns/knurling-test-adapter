@@ -1,6 +1,6 @@
 [package]
 name = "stm32f4-prng"
-version = "0.1.0"
+version = "0.1.1"
 description = "A software-only PRNG seeded with ADC data for the STM32F4xx family"
 repository = "https://github.com/jamesmunns/knurling-test-adapter"
 authors = ["James Munns <james.munns@ferrous-systems.com>"]
@@ -23,3 +23,6 @@ default-features = false
 [dependencies.rand]
 version = "0.7.3"
 default-features = false
+
+[package.metadata.docs.rs]
+features = ["stm32f4xx-hal/stm32f411"]
