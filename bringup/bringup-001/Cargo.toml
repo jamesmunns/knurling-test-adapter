@@ -14,12 +14,14 @@ ws2812-spi = "0.3"
 smart-leds = "0.3.0"
 embedded-hal = "0.2.4"
 nb = "1.0.0"
-stm32-usbd = { version = "0.5.1", features = ["ram_access_2x16"] }
 usb-device = "0.2.7"
 usbd-serial = "0.1.1"
 cortex-m-rtic = "0.5.5"
 rand_chacha = { version = "0.2.2", default-features = false }
 rand = { version = "0.7.3", default-features = false }
+
+[dependencies.stm32f4-prng]
+path = "../../crates/stm32f4-prng"
 
 [dependencies.bbqueue]
 path = "../../bbqueue/core"
@@ -90,3 +92,6 @@ debug = false
 debug-assertions = false
 opt-level = 0
 overflow-checks = false
+
+[patch.crates-io]
+stm32f4xx-hal = { path = "../../stm32f4xx-hal" }

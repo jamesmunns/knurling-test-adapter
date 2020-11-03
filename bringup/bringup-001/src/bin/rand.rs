@@ -4,7 +4,7 @@
 use bringup_001 as _; // global logger + panicking-behavior + memory layout
 use rand::RngCore;
 use stm32f4xx_hal::{
-    adc::{Adc, Temperature, config::{AdcConfig, Resolution, SampleTime}},
+    adc::{Adc, config::AdcConfig},
     stm32::{SPI5, USART1},
     prelude::*,
     spi::{Spi, NoSck, NoMiso},
@@ -12,18 +12,14 @@ use stm32f4xx_hal::{
     gpio::gpiob::PB8,
     gpio::{Alternate, AF6},
     otg_fs::{USB, UsbBus},
-    signature::{Uid, VrefCal, VtempCal110, VtempCal30},
 };
 use ws2812_spi::{Ws2812, MODE};
-use cortex_m::asm::{delay, nop};
-use smart_leds::{RGB8, SmartLedsWrite, colors, gamma, brightness};
+use cortex_m::asm::delay;
+use smart_leds::{RGB8, SmartLedsWrite, colors, gamma};
 use usb_device::{prelude::*, bus::UsbBusAllocator};
 use usbd_serial::SerialPort;
 use core::sync::atomic::{AtomicU32, Ordering};
-use rand_chacha::{
-    ChaCha8Rng,
-    rand_core::SeedableRng,
-};
+use stm32f4_prng::{seed_rng, RngConfig};
 
 static COLOR_CMD: AtomicU32 = AtomicU32::new(0);
 type SmartLed = Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<AF6>>)>>;
@@ -63,57 +59,8 @@ const APP: () = {
             true,
             AdcConfig::default()
         );
-        adc.enable_temperature_and_vref();
-        adc.set_resolution(Resolution::Twelve);
 
-        let mut key = [0u8; 32];
-
-        let uid = Uid::get();
-        let vtc30 = VtempCal30::get();
-        let vtc110 = VtempCal110::get();
-
-        // 7 bytes (7/32)
-        let lot = uid.lot_num().as_bytes();
-        key[..7].copy_from_slice(lot);
-
-        // 1 byte (8/32)
-        let waf = uid.waf_num();
-        key[7] = waf;
-
-        // 2 bytes (10/32)
-        let xpos = uid.x().to_le_bytes();
-        key[8..10].copy_from_slice(&xpos);
-
-        // 2 bytes (12/32)
-        let ypos = uid.y().to_le_bytes();
-        key[10..12].copy_from_slice(&ypos);
-
-        // 2 bytes (14/32)
-        let cal30 = vtc30.read().to_le_bytes();
-        key[12..14].copy_from_slice(&cal30);
-
-        // 2 bytes (16/32)
-        let cal110 = vtc110.read().to_le_bytes();
-        key[14..16].copy_from_slice(&cal110);
-
-        // Combine
-        let (first, second) = key.split_at_mut(16);
-
-        for byte in second.iter_mut() {
-            let sample = adc.convert(&Temperature, SampleTime::Cycles_480);
-            *byte = sample as u8;
-        }
-
-        let mut rng = ChaCha8Rng::from_seed(key);
-
-        let nop_cycles = 8192 + (rng.next_u32() & 0x1FFF);
-        defmt::info!("Nopping {:u32} times", nop_cycles);
-
-        for _ in 0..nop_cycles {
-            let _ = rng.next_u32();
-        }
-
-        defmt::info!("Nopped.");
+        let mut rng = seed_rng(&mut adc, RngConfig::default());
         defmt::info!("Random number: {:u8}", rng.next_u32() as u8);
 
         let color = rng.next_u32() | 0xFF00_0000;
@@ -153,9 +100,9 @@ const APP: () = {
         *USB_BUS = Some(UsbBus::new(usb, EP_MEMORY));
         let usb_bus = USB_BUS.as_ref().unwrap();
 
-        let mut serial = usbd_serial::SerialPort::new(usb_bus);
+        let serial = usbd_serial::SerialPort::new(usb_bus);
 
-        let mut usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x16c0, 0x27dd))
+        let usb_dev = UsbDeviceBuilder::new(usb_bus, UsbVidPid(0x16c0, 0x27dd))
             .manufacturer("Fake company")
             .product("Serial port")
             .serial_number("TEST")

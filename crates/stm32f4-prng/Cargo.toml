@@ -1,0 +1,25 @@
+[package]
+name = "stm32f4-prng"
+version = "0.1.0"
+description = "A software-only PRNG seeded with ADC data for the STM32F4xx family"
+repository = "https://github.com/jamesmunns/knurling-test-adapter"
+authors = ["James Munns <james.munns@ferrous-systems.com>"]
+edition = "2018"
+
+categories = [
+    "embedded",
+    "no-std",
+    "memory-management",
+]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+stm32f4xx-hal = "0.8.3"
+
+[dependencies.rand_chacha]
+version = "0.2.2"
+default-features = false
+
+[dependencies.rand]
+version = "0.7.3"
+default-features = false
