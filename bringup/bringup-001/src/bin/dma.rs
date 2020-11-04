@@ -20,8 +20,8 @@ use usbd_serial::SerialPort;
 use core::sync::atomic::{AtomicU32, Ordering};
 use bbqueue::{ConstBBBuffer, BBBuffer, consts::*, framed::{FrameConsumer, FrameProducer, FrameGrantW, FrameGrantR}};
 
-static RS485_RX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
-static RS485_TX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_RX: BBBuffer<U512> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_TX: BBBuffer<U512> = BBBuffer ( ConstBBBuffer::new() );
 
 static COLOR_CMD: AtomicU32 = AtomicU32::new(0);
 type SmartLed = Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<AF6>>)>>;
@@ -32,10 +32,10 @@ const APP: () = {
         smartled: SmartLed,
         rs485_tx: Tx<USART1>,
         rs485_rx: Rx<USART1>,
-        rs485_rx_prod: FrameProducer<'static, U4096>,
-        rs485_rx_cons: FrameConsumer<'static, U4096>,
-        rs485_tx_prod: FrameProducer<'static, U4096>,
-        rs485_tx_cons: FrameConsumer<'static, U4096>,
+        rs485_rx_prod: FrameProducer<'static, U512>,
+        rs485_rx_cons: FrameConsumer<'static, U512>,
+        rs485_tx_prod: FrameProducer<'static, U512>,
+        rs485_tx_cons: FrameConsumer<'static, U512>,
         usb_serial: SerialPort<'static, UsbBus<USB>>,
         usb_dev: UsbDevice<'static, UsbBus<USB>>,
         tx_xfr: Option<
@@ -44,16 +44,17 @@ const APP: () = {
                 dma::Channel4,
                 USART1,
                 dma::MemoryToPeripheral,
-                FrameGrantR<'static, U4096>
+                FrameGrantR<'static, U512>
             >
         >,
+        tx_stream: Option<dma::Stream7<stm32::DMA2>>,
         rx_xfr: Option<
             dma::Transfer<
                 dma::Stream5<stm32::DMA2>,
                 dma::Channel4,
                 USART1,
                 dma::PeripheralToMemory,
-                FrameGrantW<'static, U4096>
+                FrameGrantW<'static, U512>
             >
         >,
     }
@@ -141,6 +142,9 @@ const APP: () = {
         );
 
         rx_txfr.start(|usart| {
+            usart.cr3.modify(|_r, w| {
+                w.dmar().enabled()
+            });
             usart.cr1.modify(|_r, w| {
                 w.re().set_bit()
             })
@@ -158,6 +162,7 @@ const APP: () = {
             rs485_tx_cons: cons_tx,
             rx_xfr: Some(rx_txfr),
             tx_xfr: None,
+            tx_stream: Some(streams.7),
         }
     }
 
@@ -187,12 +192,56 @@ const APP: () = {
         );
 
         txfr.start(|usart| {
+            usart.cr3.modify(|_r, w| {
+                w.dmar().enabled()
+            });
             usart.cr1.modify(|_r, w| {
                 w.re().set_bit()
             })
         });
 
         *ctx.resources.rx_xfr = Some(txfr);
+    }
+
+    #[task(binds = DMA2_STREAM7, resources = [tx_xfr, tx_stream, rs485_tx_cons])]
+    fn rs485_tx(ctx: rs485_tx::Context) {
+        // defmt::info!("tx ding!");
+        let tx_stream = ctx.resources.tx_stream;
+        let mut xfr = ctx.resources.tx_xfr.take().unwrap();
+        let cons = ctx.resources.rs485_tx_cons;
+
+        xfr.clear_interrupts();
+
+        let (stream, periph, buf, _dblbuf) = xfr.free();
+        buf.release();
+
+        if let Some(rgr) = cons.read() {
+            let dma_cfg = dma::config::DmaConfig::default()
+                .transfer_complete_interrupt(true)
+                .memory_increment(true);
+
+            let mut tx_xfr = dma::Transfer::init(
+                stream,
+                periph,
+                rgr,
+                None,
+                dma_cfg
+            );
+
+            tx_xfr.start(|usart| {
+                usart.cr3.modify(|_r, w| {
+                    w.dmat().enabled()
+                });
+                usart.cr1.modify(|_r, w| {
+                    w.te().enabled()
+                })
+            });
+
+            *ctx.resources.tx_xfr = Some(tx_xfr);
+        } else {
+            // put stream back
+            *tx_stream = Some(stream);
+        }
 
     }
 
@@ -227,44 +276,74 @@ const APP: () = {
         }
     }
 
-    #[task(resources = [tx_xfr, rs485_tx_cons])]
+    #[task(resources = [tx_xfr, rs485_tx_cons, tx_stream])]
     fn tx_trigger(ctx: tx_trigger::Context) {
+        // defmt::info!("Tx Triggered!");
         let xfr = ctx.resources.tx_xfr;
         let cons = ctx.resources.rs485_tx_cons;
+        let stream = ctx.resources.tx_stream;
 
         if xfr.is_none() {
+            // defmt::info!("xfr was none!");
             if let Some(rgr) = cons.read() {
+                defmt::info!("Got grant! Starting Dma...");
+                let dma_cfg = dma::config::DmaConfig::default()
+                    .transfer_complete_interrupt(true)
+                    .memory_increment(true);
 
+                let mut tx_xfr = dma::Transfer::init(
+                    stream.take().unwrap(),
+                    unsafe { stm32::Peripherals::steal().USART1 },
+                    rgr,
+                    None,
+                    dma_cfg
+                );
+
+                tx_xfr.start(|usart| {
+                    usart.cr3.modify(|_r, w| {
+                        w.dmat().enabled()
+                    });
+                    usart.cr1.modify(|_r, w| {
+                        w.te().enabled()
+                    })
+                });
+
+                *xfr = Some(tx_xfr);
             }
         }
     }
 
-    #[idle(resources = [smartled, rs485_tx, rs485_rx_cons])]
+    #[idle(resources = [smartled, rs485_rx_cons, rs485_tx_prod], spawn = [tx_trigger])]
     fn idle(ctx: idle::Context) -> ! {
         let led = ctx.resources.smartled;
-        let tx = ctx.resources.rs485_tx;
+        let tx = ctx.resources.rs485_tx_prod;
         let rx = ctx.resources.rs485_rx_cons;
 
         let mut color = colors::WHITE;
 
         loop {
-            for _ in 0..128 {
-                'inner: loop {
-                    match tx.write(42) {
-                        Ok(_) => break 'inner,
-                        Err(nb::Error::WouldBlock) => {
-                            delay(96_000_000 / 500_000);
-                            continue 'inner
-                        },
-                        Err(_) => panic!(),
-                    }
-                }
+            if let Ok(mut wgr) = tx.grant(128) {
+                // defmt::info!("Pushing Send!");
+                wgr.copy_from_slice(&[42; 128]);
+                wgr.commit(128);
+                ctx.spawn.tx_trigger().ok();
             }
+            // for _ in 0..128 {
+            //     'inner: loop {
+            //         match tx.write(42) {
+            //             Ok(_) => break 'inner,
+            //             Err(nb::Error::WouldBlock) => {
+            //                 delay(96_000_000 / 500_000);
+            //                 continue 'inner
+            //             },
+            //             Err(_) => panic!(),
+            //         }
+            //     }
+            // }
 
             // led.write(
             //     [color].iter().cloned()
             // ).unwrap();
-            // delay(96_000_000 / 1024);
 
             while let Some(incoming) = rx.read() {
                 defmt::info!("Got {:?} bytes", incoming.len());
@@ -282,6 +361,9 @@ const APP: () = {
 
                 incoming.release();
             }
+
+            delay(96_000_000 / 96_000_000);
+
 
             // led.write(
             //     [colors::BLACK].iter().cloned()
