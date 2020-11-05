@@ -20,8 +20,8 @@ use usbd_serial::SerialPort;
 use core::sync::atomic::{AtomicU32, Ordering};
 use bbqueue::{ConstBBBuffer, BBBuffer, consts::*, framed::{FrameConsumer, FrameProducer, FrameGrantW, FrameGrantR}};
 
-static RS485_RX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
-static RS485_TX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_RX: BBBuffer<U8192> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_TX: BBBuffer<U8192> = BBBuffer ( ConstBBBuffer::new() );
 
 static COLOR_CMD: AtomicU32 = AtomicU32::new(0);
 type SmartLed = Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<AF6>>)>>;
@@ -32,10 +32,10 @@ const APP: () = {
         smartled: SmartLed,
         rs485_tx: Tx<USART1>,
         rs485_rx: Rx<USART1>,
-        rs485_rx_prod: FrameProducer<'static, U4096>,
-        rs485_rx_cons: FrameConsumer<'static, U4096>,
-        rs485_tx_prod: FrameProducer<'static, U4096>,
-        rs485_tx_cons: FrameConsumer<'static, U4096>,
+        rs485_rx_prod: FrameProducer<'static, U8192>,
+        rs485_rx_cons: FrameConsumer<'static, U8192>,
+        rs485_tx_prod: FrameProducer<'static, U8192>,
+        rs485_tx_cons: FrameConsumer<'static, U8192>,
         usb_serial: SerialPort<'static, UsbBus<USB>>,
         usb_dev: UsbDevice<'static, UsbBus<USB>>,
         tx_xfr: Option<
@@ -44,7 +44,7 @@ const APP: () = {
                 dma::Channel4,
                 USART1,
                 dma::MemoryToPeripheral,
-                FrameGrantR<'static, U4096>
+                FrameGrantR<'static, U8192>
             >
         >,
         tx_stream: Option<dma::Stream7<stm32::DMA2>>,
@@ -54,7 +54,7 @@ const APP: () = {
                 dma::Channel4,
                 USART1,
                 dma::PeripheralToMemory,
-                FrameGrantW<'static, U4096>
+                FrameGrantW<'static, U8192>
             >
         >,
     }
@@ -125,7 +125,7 @@ const APP: () = {
 
         let (mut prod_rx, cons_rx) = RS485_RX.try_split_framed().unwrap();
         let (prod_tx, cons_tx) = RS485_TX.try_split_framed().unwrap();
-        let wgr = prod_rx.grant(128).unwrap();
+        let wgr = prod_rx.grant(1024).unwrap();
 
         let dma_cfg = dma::config::DmaConfig::default()
             .transfer_complete_interrupt(true)
@@ -175,9 +175,9 @@ const APP: () = {
         xfr.clear_interrupts();
 
         let (stream, periph, buf, _dblbuf) = xfr.free();
-        buf.commit(128);
+        buf.commit(1024);
 
-        let new_grant = prod.grant(128).unwrap();
+        let new_grant = prod.grant(1024).unwrap();
 
         let dma_cfg = dma::config::DmaConfig::default()
             .transfer_complete_interrupt(true)
@@ -324,16 +324,19 @@ const APP: () = {
         let tx = ctx.resources.rs485_tx_prod;
         let rx = ctx.resources.rs485_rx_cons;
 
+        let mut all_bad = 0;
+        let mut all_good = 0;
+
         let mut color = colors::WHITE;
 
         loop {
-            if let Ok(mut wgr) = tx.grant(128) {
+            if let Ok(mut wgr) = tx.grant(1024) {
                 // defmt::info!("Pushing Send!");
-                wgr.copy_from_slice(&[42; 128]);
-                wgr.commit(128);
+                wgr.copy_from_slice(&[42; 1024]);
+                wgr.commit(1024);
                 ctx.spawn.tx_trigger().ok();
             }
-            // for _ in 0..128 {
+            // for _ in 0..1024 {
             //     'inner: loop {
             //         match tx.write(42) {
             //             Ok(_) => break 'inner,
@@ -362,13 +365,15 @@ const APP: () = {
                     }
                 }
 
-                assert!(incoming.len() == 128);
-                assert!(good <= 128);
-                assert!(bad <= 128);
-                assert!(good >= 0);
-                assert!(bad >= 0);
+                if bad == 0 {
+                    all_good += 1;
+                } else {
+                    all_bad += 1;
+                }
 
-                defmt::info!("Good: {:?}, Bad: {:?}", good, bad);
+                if ((all_good + all_bad) & 1023) == 0 {
+                    defmt::info!("all good: {:?}, all bad: {:?}", all_good, all_bad);
+                }
 
                 incoming.release();
             }
