@@ -20,8 +20,8 @@ use usbd_serial::SerialPort;
 use core::sync::atomic::{AtomicU32, Ordering};
 use bbqueue::{ConstBBBuffer, BBBuffer, consts::*, framed::{FrameConsumer, FrameProducer, FrameGrantW, FrameGrantR}};
 
-static RS485_RX: BBBuffer<U512> = BBBuffer ( ConstBBBuffer::new() );
-static RS485_TX: BBBuffer<U512> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_RX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
+static RS485_TX: BBBuffer<U4096> = BBBuffer ( ConstBBBuffer::new() );
 
 static COLOR_CMD: AtomicU32 = AtomicU32::new(0);
 type SmartLed = Ws2812<Spi<SPI5, (NoSck, NoMiso, PB8<Alternate<AF6>>)>>;
@@ -32,10 +32,10 @@ const APP: () = {
         smartled: SmartLed,
         rs485_tx: Tx<USART1>,
         rs485_rx: Rx<USART1>,
-        rs485_rx_prod: FrameProducer<'static, U512>,
-        rs485_rx_cons: FrameConsumer<'static, U512>,
-        rs485_tx_prod: FrameProducer<'static, U512>,
-        rs485_tx_cons: FrameConsumer<'static, U512>,
+        rs485_rx_prod: FrameProducer<'static, U4096>,
+        rs485_rx_cons: FrameConsumer<'static, U4096>,
+        rs485_tx_prod: FrameProducer<'static, U4096>,
+        rs485_tx_cons: FrameConsumer<'static, U4096>,
         usb_serial: SerialPort<'static, UsbBus<USB>>,
         usb_dev: UsbDevice<'static, UsbBus<USB>>,
         tx_xfr: Option<
@@ -44,7 +44,7 @@ const APP: () = {
                 dma::Channel4,
                 USART1,
                 dma::MemoryToPeripheral,
-                FrameGrantR<'static, U512>
+                FrameGrantR<'static, U4096>
             >
         >,
         tx_stream: Option<dma::Stream7<stm32::DMA2>>,
@@ -54,7 +54,7 @@ const APP: () = {
                 dma::Channel4,
                 USART1,
                 dma::PeripheralToMemory,
-                FrameGrantW<'static, U512>
+                FrameGrantW<'static, U4096>
             >
         >,
     }
@@ -64,7 +64,7 @@ const APP: () = {
         static mut EP_MEMORY: [u32; 1024] = [0; 1024];
         static mut USB_BUS: Option<UsbBusAllocator<UsbBus<USB>>> = None;
 
-        defmt::info!("Hello, world!");
+        // defmt::info!("Hello, world!");
 
         let board = ctx.device;
 
@@ -168,7 +168,7 @@ const APP: () = {
 
     #[task(binds = DMA2_STREAM5, resources = [rs485_rx_prod, rx_xfr])]
     fn rs485_rx(ctx: rs485_rx::Context) {
-        defmt::info!("ding!");
+        // defmt::info!("ding!");
         let prod = ctx.resources.rs485_rx_prod;
         let mut xfr = ctx.resources.rx_xfr.take().unwrap();
 
@@ -192,6 +192,8 @@ const APP: () = {
         );
 
         txfr.start(|usart| {
+            let _ = usart.sr.read().bits();
+            let _ = usart.dr.read().bits();
             usart.cr3.modify(|_r, w| {
                 w.dmar().enabled()
             });
@@ -214,6 +216,9 @@ const APP: () = {
 
         let (stream, periph, buf, _dblbuf) = xfr.free();
         buf.release();
+
+        while periph.sr.read().tc().bit_is_clear() { }
+        periph.sr.modify(|_r, w| w.tc().clear_bit());
 
         if let Some(rgr) = cons.read() {
             let dma_cfg = dma::config::DmaConfig::default()
@@ -286,7 +291,7 @@ const APP: () = {
         if xfr.is_none() {
             // defmt::info!("xfr was none!");
             if let Some(rgr) = cons.read() {
-                defmt::info!("Got grant! Starting Dma...");
+                // defmt::info!("Got grant! Starting Dma...");
                 let dma_cfg = dma::config::DmaConfig::default()
                     .transfer_complete_interrupt(true)
                     .memory_increment(true);
@@ -346,7 +351,7 @@ const APP: () = {
             // ).unwrap();
 
             while let Some(incoming) = rx.read() {
-                defmt::info!("Got {:?} bytes", incoming.len());
+                // defmt::info!("Got {:?} bytes", incoming.len());
                 let mut good = 0;
                 let mut bad = 0;
                 for b in incoming.iter() {
@@ -357,13 +362,16 @@ const APP: () = {
                     }
                 }
 
+                assert!(incoming.len() == 128);
+                assert!(good <= 128);
+                assert!(bad <= 128);
+                assert!(good >= 0);
+                assert!(bad >= 0);
+
                 defmt::info!("Good: {:?}, Bad: {:?}", good, bad);
 
                 incoming.release();
             }
-
-            delay(96_000_000 / 96_000_000);
-
 
             // led.write(
             //     [colors::BLACK].iter().cloned()
